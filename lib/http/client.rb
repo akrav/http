@@ -12,6 +12,8 @@ module HTTP
 
     def initialize(default_options = {})
       @default_options = HTTP::Options.new(default_options)
+      @parser = HTTP::Response::Parser.new
+      @socket = nil
     end
 
     def body(opts, headers)
@@ -35,6 +37,7 @@ module HTTP
       uri = "#{uri}?#{URI.encode_www_form(opts.params)}" if opts.params
 
       request = HTTP::Request.new method, uri, headers, proxy, method_body
+
       if opts.follow
         code = 302
         while code == 302 or code == 301
@@ -50,70 +53,77 @@ module HTTP
         end
       end
 
-      opts.callbacks[:request].each { |c| c.call(request) }
-      response = perform request, opts
-      opts.callbacks[:response].each { |c| c.call(response) }
-
-      format_response method, response, opts.response
+      perform request, opts
     end
 
     def perform(request, options)
-      parser = HTTP::Response::Parser.new
       uri = request.uri
-      socket = options[:socket_class].open(uri.host, uri.port) # TODO: proxy support
+
+      # TODO: proxy support, keep-alive support
+      @socket = options[:socket_class].open(uri.host, uri.port) 
 
       if uri.is_a?(URI::HTTPS)
         if options[:ssl_context] == nil
           context = OpenSSL::SSL::SSLContext.new
         else
+          # TODO: abstract away SSLContexts so we can use other SSL libraries
           context = options[:ssl_context]
         end
-        socket = options[:ssl_socket_class].new(socket, context)
-        socket.connect
+
+        @socket = options[:ssl_socket_class].new(socket, context)
+        @socket.connect
       end
 
-      request.stream socket
+      request.stream @socket
 
       begin
-        parser << socket.readpartial(BUFFER_SIZE) until parser.headers
+        @parser << @socket.readpartial(BUFFER_SIZE) until @parser.headers
       rescue IOError, Errno::ECONNRESET, Errno::EPIPE => ex
         raise IOError, "problem making HTTP request: #{ex}"
       end
 
-      response = HTTP::Response.new(parser.status_code, parser.http_version, parser.headers) do
-        if !parser.finished? || (@body_remaining && @body_remaining > 0)
-          chunk = parser.chunk || begin
-            parser << socket.readpartial(BUFFER_SIZE)
-            parser.chunk || ""
-          end
-
-          @body_remaining -= chunk.length if @body_remaining
-          @body_remaining = nil if @body_remaining && @body_remaining < 1
-
-          chunk
-        end
-      end
+      body = HTTP::ResponseBody.new(self)
+      response = HTTP::Response.new(@parser.status_code, @parser.http_version, @parser.headers, body)
 
       @body_remaining = Integer(response['Content-Length']) if response['Content-Length']
       response
     end
 
-    def format_response(method, response, option)
-      case option
-      when :auto, NilClass
-        if method == :head
-          response
-        else
-          HTTP::Response::BodyDelegator.new(response, response.parse_body)
-        end
-      when :object
-        response
-      when :parsed_body
-        HTTP::Response::BodyDelegator.new(response, response.parse_body)
-      when :body
-        HTTP::Response::BodyDelegator.new(response)
-      else raise ArgumentError, "invalid response type: #{option}"
+    # Read a chunk of the body
+    def readpartial(size = BUFFER_SIZE)
+      puts "doing readpartial"
+      
+      if @parser.finished? || (@body_remaining && @body_remaining.zero?)
+        puts "@parser.finished? #{@parser.finished?} @body_remaining #{@body_remaining.inspect}"
+        return
       end
+
+      raise StateError, "not connected" unless @socket
+
+      chunk = @parser.chunk
+      unless chunk
+        @parser << @socket.readpartial(BUFFER_SIZE)
+        @parser.chunk || ""
+      end
+
+      if @body_remaining
+        @body_remaining -= chunk.length 
+        @body_remaining = nil if @body_remaining < 1
+      end
+
+      if @parser.finished?
+        puts "parser finished"
+        finish_response 
+      end
+
+      chunk
+    end
+
+    # Callback for when we've reached the end of a response
+    def finish_response
+      # TODO: keep-alive support
+      @socket.close
+      @socket = nil
     end
   end
 end

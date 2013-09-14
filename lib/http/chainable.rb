@@ -50,11 +50,6 @@ module HTTP
       branch(options).request verb, uri
     end
 
-    # Make a request invoking the given event callbacks
-    def on(event, &block)
-      branch default_options.with_callback(event, block)
-    end
-
     # Make a request through an HTTP proxy
     def via(*proxy)
       proxy_hash = {}
@@ -118,20 +113,9 @@ module HTTP
       end
     end
 
-    def default_callbacks
-      default_options.callbacks
-    end
-
-    def default_callbacks=(callbacks)
-      @default_options = default_options.dup do |opts|
-        opts.callbacks = callbacks
-      end
-    end
-
-    private
-
     def branch(options)
       HTTP::Client.new(options)
     end
+    private :branch
   end
 end

@@ -66,13 +66,14 @@ module HTTP
 
     attr_reader :status
     attr_reader :headers
+    attr_reader :body
 
     # Status aliases! TIMTOWTDI!!! (Want to be idiomatic? Just use status :)
     alias_method :code,        :status
     alias_method :status_code, :status
 
-    def initialize(status = nil, version = "1.1", headers = {}, body = nil, &body_proc)
-      @status, @version, @body, @body_proc = status, version, body, body_proc
+    def initialize(status = nil, version = "1.1", headers = {}, body)
+      @status, @version, @body = status, version, body
 
       @headers = {}
       headers.each do |field, value|
@@ -108,53 +109,14 @@ module HTTP
       @headers[name] || @headers[canonicalize_header(name)]
     end
 
-    # Obtain the response body
-    def body
-      @body ||= begin
-        raise "no body available for this response" unless @body_proc
-
-        body = "" unless block_given?
-        while (chunk = @body_proc.call)
-          if block_given?
-            yield chunk
-          else
-            body << chunk
-          end
-        end
-        body unless block_given?
-      end
-    end
-
-    # Parse the response body according to its content type
-    def parse_body
-      if @headers['Content-Type']
-        mime_type = MimeType[@headers['Content-Type'].split(/;\s*/).first]
-        return mime_type.parse(body) if mime_type
-      end
-
-      body
-    end
-
     # Returns an Array ala Rack: `[status, headers, body]`
     def to_a
-      [status, headers, parse_body]
+      [status, headers, body.to_s]
     end
 
     # Inspect a response
     def inspect
       "#<#{self.class}/#{@version} #{status} #{reason} @headers=#{@headers.inspect}>"
-    end
-
-    class BodyDelegator < ::Delegator
-      attr_reader :response
-
-      def initialize(response, body = response.body)
-        super(body)
-        @response, @body = response, body
-      end
-
-      def __getobj__; @body; end
-      def __setobj__(obj); @body = obj; end
     end
   end
 end
